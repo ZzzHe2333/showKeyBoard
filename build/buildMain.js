@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const iconv = require('iconv-lite');
+let hasBuildError = false;
 // 主程序
 (() => {
     // 定义文件路径
@@ -14,11 +15,18 @@ const iconv = require('iconv-lite');
     console.log('统一根据package.json的版本修改 showkeyboard.ahk 和 .nsi文件')
     // 获取版本 
     let version = getVersion(package)
+    if (!version) {
+        hasBuildError = true;
+        return;
+    }
     // 读取文件和替换版本
     // !define PRODUCT_VERSION "v1.38"
     let res = false
     res = replaceVer([nsiFileNode, nsiFile], true, version, [/!define PRODUCT_VERSION "v(\d+\.\d+)"/]) 
-    if(!res)return
+    if(!res){
+        hasBuildError = true;
+        return
+    }
 // ;@Ahk2Exe-SetProductVersion 1.38.0.0
 // ;@Ahk2Exe-SetFileVersion 1.38.0.0
 // global APPName:="ShowKeyBoard", ver:="1.38" 
@@ -27,29 +35,49 @@ const iconv = require('iconv-lite');
         /;@Ahk2Exe-SetFileVersion (\d+\.\d+)/,
         /global\s+APPName\s*:=\s*"ShowKeyBoard",\s*ver\s*:=\s*"(\d+\.\d+)"/,
     ])
-    if(!res)return
+    if(!res){
+        hasBuildError = true;
+        return
+    }
     // 执行编译
-    if (!fs.existsSync(Ahk2Exe)) {
-        console.log('!!!AHK编译文件不存在,无法编译执行文件:',Ahk2Exe);
+    if (!isCmdAvailable(Ahk2Exe)) {
+        console.error('!!!AHK编译文件不存在或不可执行,无法编译执行文件:',Ahk2Exe);
+        console.error('请在 build/buildMain.config.js 中配置 Ahk2Exe 的完整路径，或将 Ahk2Exe.exe 加入 PATH。');
+        hasBuildError = true;
         return
     }
     // 编译 AHK
     // 构建编译命令
     res = myExec(`"${Ahk2Exe}" /in "${ahkFile}" `,'AHK',1) // 可以输出编译明细
-    if(!res)return
+    if(!res){
+        hasBuildError = true;
+        return
+    }
 
     // 编译 NSIS
-    if (!fs.existsSync(NSIS)) {
-        console.log('!!!NSIS编译文件不存在,无法编译安装包:',NSIS);
+    if (!isCmdAvailable(NSIS)) {
+        console.error('!!!NSIS编译文件不存在或不可执行,无法编译安装包:',NSIS);
+        console.error('请在 build/buildMain.config.js 中配置 makensis 的完整路径，或将 makensis.exe 加入 PATH。');
+        hasBuildError = true;
         return
     }
     res = myExec(`"${NSIS}" "${nsiFileNode}" `,'NSIS Node')
-    if(!res)return
+    if(!res){
+        hasBuildError = true;
+        return
+    }
     res = myExec(`"${NSIS}" "${nsiFile}" `,'NSIS')
-    if(!res)return
+    if(!res){
+        hasBuildError = true;
+        return
+    }
     // 编译NSIS
 
 })();
+
+if (hasBuildError) {
+    process.exit(1);
+}
 
 // 编译调用
 function myExec(command,info,detail){
@@ -74,8 +102,38 @@ function getVersion(packFile) {
     const packageJsonContent = fs.readFileSync(packFile, 'utf-8');
     // 解析 JSON
     const packageJson = JSON.parse(packageJsonContent);
-    console.log('Version:', packageJson.version)
-    return packageJson.version
+    const version = normalizeVersion(packageJson.version);
+    if (!version) {
+        console.error('版本号格式不正确, 需要类似 1.56 或 1.56.0，当前值:', packageJson.version);
+        return '';
+    }
+    console.log('Version:', packageJson.version, '=> build version:', version)
+    return version
+}
+
+function normalizeVersion(version) {
+    const input = String(version || '').trim();
+    const match = input.match(/^(\d+\.\d+(?:\.\d+)?)/);
+    return match?.[1] || '';
+}
+
+function isCmdAvailable(cmdPath) {
+    if (!cmdPath) {
+        return false;
+    }
+    if (path.isAbsolute(cmdPath)) {
+        return fs.existsSync(cmdPath);
+    }
+    if (fs.existsSync(cmdPath)) {
+        return true;
+    }
+    try {
+        const locator = process.platform === 'win32' ? 'where' : 'which';
+        execSync(`${locator} "${cmdPath}"`, { stdio: 'ignore' });
+        return true;
+    } catch (error) {
+        return false;
+    }
 }
 function replaceVer(filePath, isGbk, ver,RegExps) {
     let res = true
